@@ -41,3 +41,37 @@ int reg_build(uint8_t *out, int cap, uint64_t seq_ms,
     pos = put_str(out, cap, pos, iccid);
     return pos;
 }
+
+int reg_parse(const uint8_t *buf, int len, struct reg_reply *reply)
+{
+    uint64_t seq;
+    int i;
+    int n;
+
+    if (buf == NULL || reply == NULL || len < 10 || buf[0] != REG_REPLY) {
+        return -1;
+    }
+
+    seq = 0;
+    for (i = 0; i < 8; i++) {
+        seq = (seq << 8) | buf[1 + i];
+    }
+    reply->seq = seq;
+    reply->code = buf[9];
+    reply->cid[0] = '\0';
+    if (reply->code != 0) {
+        return 0;
+    }
+    if (len < 11) {
+        return -1;
+    }
+    n = buf[10];
+    if (n <= 0 || n >= (int)sizeof(reply->cid) || len < 11 + n) {
+        return -1;
+    }
+    for (i = 0; i < n; i++) {
+        reply->cid[i] = (char)buf[11 + i];
+    }
+    reply->cid[n] = '\0';
+    return 0;
+}

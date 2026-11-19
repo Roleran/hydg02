@@ -29,7 +29,7 @@ int n32_frame_build(uint8_t *out, int cap, uint8_t cmd, uint8_t seq,
     if (len < 0 || len > N32_DATA_MAX) {
         return -1;
     }
-    total = 8 + len;
+    total = 9 + len;
     if (out == NULL || cap < total) {
         return -1;
     }
@@ -88,7 +88,7 @@ int n32_frame_parse(const uint8_t *buf, int len, struct n32_frame *frame, int *u
         *used = 2;
         return -1;
     }
-    total = 8 + data_len;
+    total = 9 + data_len;
     if (len < total) {
         return 0;
     }

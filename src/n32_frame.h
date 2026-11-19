@@ -7,7 +7,7 @@
 #define N32_VER          0x01u
 #define N32_DATA_MAX     128
 #define N32_TEXT_MAX     120
-#define N32_FRAME_MAX    (8 + N32_DATA_MAX)
+#define N32_FRAME_MAX    (9 + N32_DATA_MAX)
 
 #define N32_CMD_PING     0x01u
 #define N32_CMD_VERSION  0x02u
@@ -21,11 +21,10 @@
 #define N32_EVT_DONE     0x91u
 
 /*
- * 协议原文是 0x01 由上往下、0x02 由下往上。
- * 整机功能列表写的是由右往左。字节还没对齐，先不要把 0x03 发给 N32。
+ * 整机只有由右往左。发给 N32 的走向字节固定用 0x01。
+ * 屏程序按由右往左处理，不再使用原稿里的上下方向，也不新增 0x03。
  */
-#define N32_DIR_DOWN     0x01u
-#define N32_DIR_UP       0x02u
+#define N32_DIR_RTL      0x01u
 
 struct n32_frame {
     uint8_t cmd;

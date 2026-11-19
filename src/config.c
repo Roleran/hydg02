@@ -31,6 +31,7 @@ static void set_defaults(struct app_config *cfg)
     copy_text(cfg->at_dev, CFG_TEXT, DEV_AT);
     copy_text(cfg->net_if, CFG_TEXT, NET_IF);
     cfg->amp_gpio = AMP_GPIO;
+    copy_text(cfg->voice_dir, (int)sizeof(cfg->voice_dir), "/etc/hydg02/voice");
 }
 
 static void apply_line(struct app_config *cfg, const char *key, const char *val)
@@ -45,6 +46,10 @@ static void apply_line(struct app_config *cfg, const char *key, const char *val)
         copy_text(cfg->mqtt_host, CFG_TEXT, val);
     } else if (strcmp(key, "mqtt_port") == 0) {
         cfg->mqtt_port = atoi(val);
+    } else if (strcmp(key, "http_url") == 0) {
+        copy_text(cfg->http_url, (int)sizeof(cfg->http_url), val);
+    } else if (strcmp(key, "apn") == 0) {
+        copy_text(cfg->apn, CFG_TEXT, val);
     } else if (strcmp(key, "n32_dev") == 0) {
         copy_text(cfg->n32_dev, CFG_TEXT, val);
     } else if (strcmp(key, "n32_baud") == 0) {
@@ -65,13 +70,15 @@ static void apply_line(struct app_config *cfg, const char *key, const char *val)
         copy_text(cfg->net_if, CFG_TEXT, val);
     } else if (strcmp(key, "amp_gpio") == 0) {
         cfg->amp_gpio = atoi(val);
+    } else if (strcmp(key, "voice_dir") == 0) {
+        copy_text(cfg->voice_dir, (int)sizeof(cfg->voice_dir), val);
     }
 }
 
 int config_load(struct app_config *cfg, const char *path)
 {
     FILE *fp;
-    char line[160];
+    char line[320];
 
     set_defaults(cfg);
     fp = fopen(path, "r");

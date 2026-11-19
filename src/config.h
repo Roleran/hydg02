@@ -9,6 +9,9 @@ struct app_config {
     char firmware[CFG_TEXT];
     char mqtt_host[CFG_TEXT];
     int mqtt_port;
+    /* 非空时每次上线用 HTTP 取 MQTT 地址，不再用 mqtt_host。 */
+    char http_url[192];
+    char apn[CFG_TEXT];
     char n32_dev[CFG_TEXT];
     unsigned n32_baud;
     char rs485_dev[CFG_TEXT];
@@ -19,6 +22,7 @@ struct app_config {
     char at_dev[CFG_TEXT];
     char net_if[CFG_TEXT];
     int amp_gpio;
+    char voice_dir[192];
 };
 
 /* 先填板上的默认节点，再用配置文件覆盖。文件打不开返回 -1。 */
