@@ -158,12 +158,35 @@ static int link_dispatch(struct link *lk, const char *topic,
     return 0;
 }
 
+#ifndef _WIN32
+/* 下载和对讲会长时间只调用 idle_ms=0，这里补心跳，避免 60 秒被断开。 */
+static int keepalive(struct link *lk)
+{
+    struct timeval now;
+    static struct timeval last;
+    long long gap;
+
+    gettimeofday(&now, NULL);
+    if (last.tv_sec == 0) {
+        last = now;
+        return 0;
+    }
+    gap = (long long)(now.tv_sec - last.tv_sec) * 1000LL +
+          (long long)(now.tv_usec - last.tv_usec) / 1000LL;
+    if (gap < 20000) {
+        return 0;
+    }
+    last = now;
+    return mqtt_ping(lk->mq);
+}
+#endif
+
 /* idle_ms 为 0 时只取走已经到达的指令。等待按 200 毫秒切开，以便应答屏的触发。 */
 static int link_pump(void *ctx, int idle_ms)
 {
     struct link *lk = ctx;
     char topic[96];
-    unsigned char payload[640];
+    unsigned char payload[1024];
     int n;
     int got;
     int left;
@@ -171,7 +194,24 @@ static int link_pump(void *ctx, int idle_ms)
     if (idle_ms < 0) {
         return mqtt_ping(lk->mq);
     }
+#ifndef _WIN32
+    if (keepalive(lk) != 0) {
+        return -1;
+    }
+#endif
     trig_service(lk->trig, link_publish, link_pump, lk);
+    if (idle_ms == 0) {
+        for (;;) {
+            got = mqtt_wait_publish(lk->mq, topic, (int)sizeof(topic),
+                                    payload, &n, (int)sizeof(payload), 0);
+            if (got <= 0) {
+                return got;
+            }
+            if (link_dispatch(lk, topic, payload, n) != 0) {
+                return -1;
+            }
+        }
+    }
     left = idle_ms;
     while (left > 0) {
         int step = left > 200 ? 200 : left;
@@ -301,7 +341,7 @@ int online_run(const struct app_config *cfg)
         log_info("注册成功，CID=%s", reply.cid);
         snprintf(msg, sizeof(msg), "raw/v1/cmd/msg/%s", reply.cid);
         snprintf(upgrade, sizeof(upgrade), "raw/v1/cmd/upgrade/%s", reply.cid);
-        if (mqtt_subscribe(mq, msg) != 0 || mqtt_subscribe(mq, upgrade) != 0) {
+        if (mqtt_subscribe2(mq, msg, upgrade) != 0) {
             log_error("订阅业务主题失败");
             mqtt_close(mq);
             sleep(RETRY_SEC);

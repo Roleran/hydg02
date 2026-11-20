@@ -433,6 +433,9 @@ int led_on_packet(struct led *led, const uint8_t *buf, int len,
                         result == 0 ? VOICE_OK : VOICE_FAIL);
     }
     if (led_save(led) != 0) {
+        *led = saved;
+        push_text(led);
+        push_switch(led);
         log_error("屏幕参数写不进 %s", LED_FILE);
         return send_ack(publish, ctx, cmd.seq, cmd.cmd, VOICE_FAIL);
     }

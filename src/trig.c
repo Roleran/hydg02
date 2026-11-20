@@ -489,18 +489,24 @@ int trig_on_packet(struct trig *trig, const uint8_t *buf, int len,
     if (cmd.cmd == TRIG_MANUAL) {
         return run_manual(trig, cmd.seq, publish, pump, ctx);
     }
-    if (cmd.cmd == TRIG_MODE) {
-        trig->mode = cmd.mode;
-    } else {
-        trig->timer_on = cmd.timer_on;
-        trig->start_h = cmd.start_h;
-        trig->start_m = cmd.start_m;
-        trig->end_h = cmd.end_h;
-        trig->end_m = cmd.end_m;
-    }
-    if (trig_save(trig) != 0) {
-        log_error("触发参数写不进 %s", TRIG_FILE);
-        return send_ack(publish, ctx, cmd.seq, cmd.cmd, VOICE_FAIL);
+    {
+        struct trig saved;
+
+        saved = *trig;
+        if (cmd.cmd == TRIG_MODE) {
+            trig->mode = cmd.mode;
+        } else {
+            trig->timer_on = cmd.timer_on;
+            trig->start_h = cmd.start_h;
+            trig->start_m = cmd.start_m;
+            trig->end_h = cmd.end_h;
+            trig->end_m = cmd.end_m;
+        }
+        if (trig_save(trig) != 0) {
+            *trig = saved;
+            log_error("触发参数写不进 %s", TRIG_FILE);
+            return send_ack(publish, ctx, cmd.seq, cmd.cmd, VOICE_FAIL);
+        }
     }
     log_info("触发方式=%d 定时=%d %02d:%02d-%02d:%02d",
              trig->mode, trig->timer_on, trig->start_h, trig->start_m,

@@ -613,6 +613,9 @@ int voice_on_packet(struct voice *voice, const uint8_t *buf, int len,
     rc = voice_parse(buf, len, &cmd);
     if (rc < 0) {
         log_info("语音指令字段不对，%d 字节", len);
+        if (buf != NULL && len >= 9 && buf[0] >= VOICE_SET && buf[0] <= VOICE_PLAY) {
+            return send_ack(publish, ctx, cmd.seq, buf[0], VOICE_FAIL);
+        }
         return 0;
     }
     if (rc > 0) {

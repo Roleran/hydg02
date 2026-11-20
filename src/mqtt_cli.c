@@ -18,6 +18,11 @@ struct mqtt {
     unsigned char rx[4096];
     int rx_len;
     unsigned short packet_id;
+    /* 订阅确认到来之前先到的发布，先留一帧，避免被当成断线。 */
+    int held_on;
+    unsigned char held_type;
+    unsigned char held[1024];
+    int held_len;
 };
 
 static int set_nonblock(int fd)
@@ -294,18 +299,19 @@ struct mqtt *mqtt_connect(const char *host, int port, const char *client_id)
     return NULL;
 }
 
-int mqtt_subscribe(struct mqtt *mq, const char *topic)
+static int subscribe_topics(struct mqtt *mq, const char *topic, const char *topic2)
 {
-    unsigned char pkt[256];
+    unsigned char pkt[512];
     int pos;
     unsigned char rl[4];
     int rl_n;
     unsigned char type;
-    unsigned char body[8];
+    unsigned char body[1024];
     int body_len;
     int left;
+    int codes;
 
-    if (mq == NULL || topic == NULL) {
+    if (mq == NULL || topic == NULL || topic[0] == '\0') {
         return -1;
     }
     pkt[0] = 0x82;
@@ -315,6 +321,15 @@ int mqtt_subscribe(struct mqtt *mq, const char *topic)
     pkt[pos++] = (unsigned char)(mq->packet_id & 0xFF);
     pos += put_str(pkt + pos, topic);
     pkt[pos++] = 0;
+    codes = 1;
+    if (topic2 != NULL && topic2[0] != '\0') {
+        if (pos + 3 + (int)strlen(topic2) >= (int)sizeof(pkt)) {
+            return -1;
+        }
+        pos += put_str(pkt + pos, topic2);
+        pkt[pos++] = 0;
+        codes = 2;
+    }
     rl_n = put_rl(rl, pos - 5);
     memmove(pkt + 1 + rl_n, pkt + 5, (size_t)(pos - 5));
     memcpy(pkt + 1, rl, (size_t)rl_n);
@@ -325,23 +340,60 @@ int mqtt_subscribe(struct mqtt *mq, const char *topic)
     left = 10000;
     while (left > 0) {
         int step = left > 500 ? 500 : left;
-        int got = read_more(mq, step);
+        int got;
         int taken;
 
-        left -= step;
-        if (got < 0) {
-            return -1;
-        }
         taken = take_packet(mq, &type, body, &body_len, (int)sizeof(body));
         if (taken == 0) {
+            got = read_more(mq, step);
+            left -= step;
+            if (got < 0) {
+                return -1;
+            }
             continue;
         }
-        if (taken < 0 || type != 9) {
+        if (taken < 0) {
             return -1;
+        }
+        /* 心跳应答丢掉。业务发布先留住，订完再交给上面处理。 */
+        if (type == 13) {
+            continue;
+        }
+        if (type == 3) {
+            if (mq->held_on || body_len > (int)sizeof(mq->held)) {
+                return -1;
+            }
+            mq->held_on = 1;
+            mq->held_type = type;
+            mq->held_len = body_len;
+            memcpy(mq->held, body, (size_t)body_len);
+            continue;
+        }
+        if (type != 9 || body_len < 2 + codes) {
+            return -1;
+        }
+        {
+            int i;
+
+            for (i = 0; i < codes; i++) {
+                if (body[2 + i] >= 0x80) {
+                    return -1;
+                }
+            }
         }
         return 0;
     }
     return -1;
+}
+
+int mqtt_subscribe(struct mqtt *mq, const char *topic)
+{
+    return subscribe_topics(mq, topic, NULL);
+}
+
+int mqtt_subscribe2(struct mqtt *mq, const char *topic, const char *topic2)
+{
+    return subscribe_topics(mq, topic, topic2);
 }
 
 int mqtt_publish(struct mqtt *mq, const char *topic,
@@ -408,20 +460,42 @@ int mqtt_wait_publish(struct mqtt *mq, char *topic, int topic_cap,
     if (mq == NULL) {
         return -1;
     }
-    /* 超时为 0 时只取缓冲里已经到的报文，不发心跳、也不再读套接字。 */
+    /*
+     * 超时为 0 时不阻塞。缓冲和套接字里已经到达的发布都要取走，
+     * 这样下载和对讲过程中仍能处理开关、查询和结束。
+     */
     if (timeout_ms <= 0) {
         for (;;) {
-            int taken = take_packet(mq, &type, body, &body_len, (int)sizeof(body));
+            int taken;
 
-            if (taken <= 0) {
-                return taken;
-            }
-            if (type == 3) {
-                if (decode_publish(body, body_len, topic, topic_cap,
-                                   payload, payload_len, payload_cap) != 0) {
+            if (mq->held_on) {
+                if (mq->held_len > (int)sizeof(body)) {
                     return -1;
                 }
-                return 1;
+                type = mq->held_type;
+                memcpy(body, mq->held, (size_t)mq->held_len);
+                body_len = mq->held_len;
+                mq->held_on = 0;
+                taken = 1;
+            } else {
+                taken = take_packet(mq, &type, body, &body_len, (int)sizeof(body));
+            }
+            if (taken < 0) {
+                return -1;
+            }
+            if (taken == 1) {
+                if (type == 3) {
+                    if (decode_publish(body, body_len, topic, topic_cap,
+                                       payload, payload_len, payload_cap) != 0) {
+                        return -1;
+                    }
+                    return 1;
+                }
+                continue;
+            }
+            taken = read_more(mq, 0);
+            if (taken <= 0) {
+                return taken;
             }
         }
     }
@@ -431,7 +505,18 @@ int mqtt_wait_publish(struct mqtt *mq, char *topic, int topic_cap,
         int got;
         int taken;
 
-        taken = take_packet(mq, &type, body, &body_len, (int)sizeof(body));
+        if (mq->held_on) {
+            if (mq->held_len > (int)sizeof(body)) {
+                return -1;
+            }
+            type = mq->held_type;
+            memcpy(body, mq->held, (size_t)mq->held_len);
+            body_len = mq->held_len;
+            mq->held_on = 0;
+            taken = 1;
+        } else {
+            taken = take_packet(mq, &type, body, &body_len, (int)sizeof(body));
+        }
         if (taken < 0) {
             return -1;
         }
@@ -498,6 +583,14 @@ int mqtt_subscribe(struct mqtt *mq, const char *topic)
 {
     (void)mq;
     (void)topic;
+    return -1;
+}
+
+int mqtt_subscribe2(struct mqtt *mq, const char *topic, const char *topic2)
+{
+    (void)mq;
+    (void)topic;
+    (void)topic2;
     return -1;
 }
 

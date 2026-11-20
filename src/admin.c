@@ -180,6 +180,17 @@ static void clear_state(const struct admin *admin)
     }
 }
 
+static void upgrade_idle(struct admin *admin)
+{
+    admin->busy = 0;
+    if (admin->voice != NULL) {
+        admin->voice->busy = 0;
+    }
+    if (admin->bus != NULL) {
+        admin->bus->busy = 0;
+    }
+}
+
 static int do_reboot(void)
 {
     char *argv[] = { "reboot", NULL };
@@ -191,6 +202,9 @@ static int do_reboot(void)
         return -1;
     }
     if (waitpid(pid, &st, 0) < 0) {
+        return -1;
+    }
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
         return -1;
     }
     return 0;
@@ -218,49 +232,25 @@ static int do_upgrade(struct admin *admin, const struct admin_cmd *cmd,
         admin->bus->busy = 1;
     }
     if (send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_STARTED) != 0) {
-        admin->busy = 0;
-        if (admin->voice != NULL) {
-            admin->voice->busy = 0;
-        }
-        if (admin->bus != NULL) {
-            admin->bus->busy = 0;
-        }
+        upgrade_idle(admin);
         return -1;
     }
     if (http_save(cmd->url, UPGRADE_PATH, digest, UPGRADE_MAX, pump, ctx) != 0) {
         unlink(UPGRADE_PATH);
         log_error("升级包下载失败");
-        admin->busy = 0;
-        if (admin->voice != NULL) {
-            admin->voice->busy = 0;
-        }
-        if (admin->bus != NULL) {
-            admin->bus->busy = 0;
-        }
+        upgrade_idle(admin);
         return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_FAIL);
     }
     if (memcmp(digest, cmd->md5, 16) != 0) {
         unlink(UPGRADE_PATH);
         log_error("升级包 MD5 不一致，继续用当前版本");
-        admin->busy = 0;
-        if (admin->voice != NULL) {
-            admin->voice->busy = 0;
-        }
-        if (admin->bus != NULL) {
-            admin->bus->busy = 0;
-        }
+        upgrade_idle(admin);
         return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_BAD_MD5);
     }
     pid = launch("/sbin/sysupgrade", argv);
     if (pid < 0) {
         unlink(UPGRADE_PATH);
-        admin->busy = 0;
-        if (admin->voice != NULL) {
-            admin->voice->busy = 0;
-        }
-        if (admin->bus != NULL) {
-            admin->bus->busy = 0;
-        }
+        upgrade_idle(admin);
         return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_FAIL);
     }
     for (i = 0; i < 6; i++) {
@@ -268,20 +258,20 @@ static int do_upgrade(struct admin *admin, const struct admin_cmd *cmd,
 
         got = waitpid(pid, &st, WNOHANG);
         if (got == pid) {
+            if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+                log_info("升级包校验通过，开始安装并重启");
+                return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_OK);
+            }
             unlink(UPGRADE_PATH);
-            admin->busy = 0;
-            if (admin->voice != NULL) {
-                admin->voice->busy = 0;
-            }
-            if (admin->bus != NULL) {
-                admin->bus->busy = 0;
-            }
+            upgrade_idle(admin);
             log_error("sysupgrade 没有接受升级包");
             return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_FAIL);
         }
-        if (pump != NULL && pump(ctx, 500) != 0) {
-            return -1;
+        if (got < 0) {
+            upgrade_idle(admin);
+            return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_FAIL);
         }
+        usleep(500000);
     }
     log_info("升级包校验通过，开始安装并重启");
     return send_ack(publish, ctx, cmd->seq, ADMIN_UPGRADE, VOICE_OK);
@@ -331,6 +321,9 @@ int admin_on_packet(struct admin *admin, const uint8_t *buf, int len,
     }
     if (cmd.cmd == ADMIN_RESET) {
         clear_state(admin);
+        if (admin->voice != NULL) {
+            admin->voice->enabled = 1;
+        }
         log_info("已清除语音、屏幕和触发参数");
     }
     if (send_ack(publish, ctx, cmd.seq, cmd.cmd, VOICE_OK) != 0) {

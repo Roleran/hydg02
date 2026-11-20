@@ -6,6 +6,8 @@ struct mqtt;
 
 struct mqtt *mqtt_connect(const char *host, int port, const char *client_id);
 int mqtt_subscribe(struct mqtt *mq, const char *topic);
+/* 两个主题放在同一条订阅里，避免订第二个时把先到的业务指令当成断线。 */
+int mqtt_subscribe2(struct mqtt *mq, const char *topic, const char *topic2);
 int mqtt_publish(struct mqtt *mq, const char *topic,
                  const unsigned char *payload, int len);
 
