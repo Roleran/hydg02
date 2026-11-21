@@ -4,7 +4,28 @@ START=95
 STOP=10
 USE_PROCD=1
 
+# 板级准备: 挂载语音分区 + 生成 fw_env.config(AB 槽位切换依赖)
+prepare_board() {
+	# 语音分区: AB 变体有独立 4MB JFFS2 分区挂到 /voice;
+	# 单分区调试变体无此分区, /voice 落在 rootfs_data 可写层
+	mkdir -p /voice 2>/dev/null
+	if ! grep -q " /voice jffs2 " /proc/mounts; then
+		local n
+		n=$(grep "\"voice\"" /proc/mtd 2>/dev/null | cut -d: -f1)
+		[ -n "$n" ] && mount -t jffs2 "/dev/$n" /voice 2>/dev/null
+	fi
+
+	# fw_env.config: uboot-envtools 装机后首次生成, mtd 号以 /proc/mtd 实测为准
+	# 格式: 设备 偏移 环境大小 扇区大小 (U-Boot: CFG_ENV_SIZE=0x1000, SECT=0x10000)
+	if [ -x /usr/sbin/fw_setenv ] && [ ! -f /etc/fw_env.config ]; then
+		local n
+		n=$(grep "\"u-boot-env\"" /proc/mtd 2>/dev/null | cut -d: -f1)
+		[ -n "$n" ] && echo "/dev/$n 0x00000 0x01000 0x10000" > /etc/fw_env.config
+	fi
+}
+
 start_service() {
+	prepare_board
 	procd_open_instance
 	procd_set_param command /usr/sbin/hydg02 /etc/hydg02/hydg02.conf
 	procd_set_param respawn 3600 5 5
