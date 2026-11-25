@@ -5,7 +5,7 @@
  * 实现为公开算法的直译, 无外部依赖。
  * 自测向量见 app/main.c --selftest。
  */
-#include <pal/sm3.h>
+#include <common/sm3.h>
 
 #include <string.h>
 #include <stdio.h>

@@ -1,5 +1,5 @@
 /*
- * include/subsystems/net.h - Network subsystem public API
+ * include/net/net.h - Network subsystem public API
  *
  * This is the ONLY header other subsystems should include for net.
  * Internal structure and driver implementations are private.

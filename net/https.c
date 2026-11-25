@@ -198,7 +198,9 @@ static int https_read_header(struct https_ctx *c, uint8_t *buf, int cap,
 
 		if (ret > 0) {
 			total += ret;
-			for (i = 3; i < total; i++) {
+			/* i <= total: 无 body 响应的 \r\n\r\n 恰好结束于
+			 * 缓冲末尾 (如 404), 差一会漏判 */
+			for (i = 3; i <= total && i < cap; i++) {
 				if (buf[i - 1] == '\n' && buf[i - 3] == '\n' &&
 				    buf[i - 2] == '\r' && buf[i - 4] == '\r') {
 					header_end = i;

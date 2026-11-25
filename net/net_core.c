@@ -11,10 +11,10 @@
  *   core -> drv: post() event delivery (upward events)
  *   app -> core: stable API calls + event callbacks
  */
-#include <subsystems/net.h>
+#include <net/net.h>
 #include <sal/evbus.h>
 #include <sal/wq.h>
-
+#include <pal/sysio.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -147,8 +147,10 @@ int net_uplink_online(void)
 		if (!(l->ops->roles & NET_ROLE_UPLINK))
 			continue;
 		if (!l->enabled) {
-			if (l->ops->enable)
-				l->ops->enable(1);
+			/* enable 失败不置 enabled — 保证下一轮
+			 * 重试会再次拨号 (原版置位后永远跳过拨号) */
+			if (!l->ops->enable || l->ops->enable(1) != 0)
+				continue;
 			l->enabled = 1;
 		}
 		if (l->ops->prepare_ip && l->ops->prepare_ip() == 0) {
@@ -249,6 +251,25 @@ static void net_wq_timer(void *ctx)
 	}
 
 	net_uplink_evaluate();
+
+	/* 上电拨号 + 掉线自愈: 无在线上行时周期性拉起 (30s 节流)。
+	 * 拨号含阻塞 AT (约 5-10s), 4G 不通时本就无 MQTT 连接,
+	 * 阻塞无害; 30s 间隔防连续阻塞 */
+	{
+		static uint64_t next_bringup_ms;
+
+		if (net.active_uplink == NET_LINK_NONE &&
+		    sys_ms() >= next_bringup_ms) {
+			next_bringup_ms = sys_ms() + 30000;
+			printf("net: 无上行在线, 拨号拉起 4G...\n");
+			net_uplink_online();
+			if (net.active_uplink != NET_LINK_NONE)
+				printf("net: 4G 已上线 (上行链路 %d)\n",
+				       net.active_uplink);
+			else
+				printf("net: 4G 未上线, 30s 后重试\n");
+		}
+	}
 }
 
 void net_pump(void)
@@ -263,7 +284,9 @@ void net_pump(void)
 
 static int net_sysinit(void)
 {
-	memset(&net, 0, sizeof(net));
+	/* 注意: 不能 memset! 静态变量加载时已清零, 且 driver 层(2)
+	 * 先于 core 层(3) 注册的链路 (ec200a) 会被这里抹掉 —
+	 * 曾导致注册丢失、拨号永远不触发 */
 	net.active_uplink = NET_LINK_NONE;
 	net.evbus = &g_evbus;
 	net.wq = &g_wq;

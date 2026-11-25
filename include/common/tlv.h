@@ -1,5 +1,5 @@
 /*
- * include/pal/tlv.h - 协议 V3.0 TLV 编解码 (协议 2.5)
+ * include/common/tlv.h - 协议 V3.0 TLV 编解码 (协议 2.5)
  *
  * 参数区由 TLV 序列组成: Tag(1) + Len(1) + Value(N)。
  * 供 0x04 解析 / 0x8x 组包共用。

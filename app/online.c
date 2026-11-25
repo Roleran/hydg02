@@ -19,7 +19,7 @@
 #include <net/https.h>
 #include <pal/config.h>
 #include <pal/sysio.h>
-#include <pal/tlv.h>
+#include <common/tlv.h>
 #include <sal/initcall.h>
 #include <sal/evbus.h>
 
@@ -338,6 +338,13 @@ retry:
 const char *online_get_cid(void)
 {
 	return g_cid;
+}
+
+/* MQTT 连接句柄: proto.c 等模块发上行报文用
+ * (proto 的 0x82/0x84 由此取实例, 不能传 NULL) */
+struct mqtt *online_mqtt(void)
+{
+	return &M;
 }
 
 enum online_state online_get_state(void)

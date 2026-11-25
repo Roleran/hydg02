@@ -7,9 +7,9 @@
  * Data plane: usb0 (ECM, cdc_ether), configured via netifd (wwan).
  * Control plane: AT commands on /dev/ttyUSB2.
  */
-#include <subsystems/net.h>
+#include <net/net.h>
 #include <sal/initcall.h>
-
+#include <pal/sysio.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -56,8 +56,11 @@ static int at_open(void)
 		return 0;
 
 	ec200a.fd = open(EC200A_AT_DEV, O_RDWR | O_NOCTTY);
-	if (ec200a.fd < 0)
+	if (ec200a.fd < 0) {
+		printf("ec200a: at_open 失败 %s: %s\n",
+		       EC200A_AT_DEV, strerror(errno));
 		return -1;
+	}
 
 	tcgetattr(ec200a.fd, &tio);
 	cfmakeraw(&tio);
@@ -127,14 +130,23 @@ static int ec200a_enable(int on)
 
 		/* check SIM */
 		if (at_cmd("AT+CPIN?", resp, sizeof(resp),
-			   EC200A_AT_TIMEOUT_MS) != 0)
+			   EC200A_AT_TIMEOUT_MS) != 0) {
+			printf("ec200a: CPIN? 无响应\n");
 			return -1;
-		if (!strstr(resp, "READY"))
+		}
+		if (!strstr(resp, "READY")) {
+			printf("ec200a: SIM 未就绪: %s\n", resp);
 			return -1;
+		}
 
-		/* dial: ECM mode, persistent connection */
-		at_cmd("AT+QNETDEVCTL=1,1,1", resp, sizeof(resp),
-		       EC200A_AT_TIMEOUT_MS);
+		/* dial: QNETDEVCTL=3,1 = 自动连接 + 写入模组 NV
+		 * (首次成功后模组开机注网自拨, 此处为幂等保底) */
+		printf("ec200a: 4G 拨号中 (QNETDEVCTL=3,1)...\n");
+		if (at_cmd("AT+QNETDEVCTL=3,1", resp, sizeof(resp),
+			   EC200A_AT_TIMEOUT_MS) == 0)
+			printf("ec200a: 拨号指令 OK\n");
+		else
+			printf("ec200a: 拨号指令无响应 (模组可能自拨中)\n");
 		/* fall back to CGACT if QNETDEVCTL not supported */
 		at_cmd("AT+CGACT=1,1", resp, sizeof(resp),
 		       EC200A_AT_TIMEOUT_MS);
@@ -184,12 +196,21 @@ static int ec200a_get_status(struct net_link_status *st)
 	if (st->state != NET_LINK_ONLINE)
 		st->state = NET_LINK_READY;
 
-	/* get signal quality */
-	if (at_cmd("AT+CSQ", resp, sizeof(resp), 2000) == 0) {
-		int rssi = 0;
+	/* get signal quality — 30s 节流:
+	 * wq 每秒轮询本函数, AT+CSQ 带 2s 超时, 不节流会
+	 * 周期性阻塞主循环 (MQTT 会断, 参见 90s 卡死教训) */
+	{
+		static uint64_t last_csq_ms;
 
-		if (sscanf(resp, "+CSQ: %d", &rssi) == 1)
-			st->rssi = rssi;
+		if (sys_ms() - last_csq_ms > 30000) {
+			last_csq_ms = sys_ms();
+			if (at_cmd("AT+CSQ", resp, sizeof(resp), 2000) == 0) {
+				int rssi = 0;
+
+				if (sscanf(resp, "+CSQ: %d", &rssi) == 1)
+					st->rssi = rssi;
+			}
+		}
 	}
 
 	/* get IP address */

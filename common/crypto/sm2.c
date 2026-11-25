@@ -12,8 +12,8 @@
  *   - ecp_double: r 可与 a 别名 (全部中间量在局部)
  *   - ecp_add: r 不可与 a/b 别名 (调用方用临时变量)
  */
-#include <pal/sm2.h>
-#include <pal/sm3.h>
+#include <common/sm2.h>
+#include <common/sm3.h>
 
 #include <string.h>
 #include <stdio.h>

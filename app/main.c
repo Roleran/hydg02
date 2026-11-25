@@ -13,6 +13,7 @@
 #include <sal/evbus.h>
 #include <sal/wq.h>
 #include <pal/config.h>
+#include <pal/sysio.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -115,6 +116,10 @@ int main(int argc, char **argv)
 	if (argc >= 2 && strcmp(argv[1], "--selftest") == 0)
 		return selftest();
 
+	/* stdout 行缓冲: 重定向到文件/管道时 musl 默认全缓冲,
+	 * 日志会滞后数 KB — 行缓冲保证实时 (联调/排障必需) */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	print_banner();
 
 	/* setup signal handling */
@@ -132,9 +137,20 @@ int main(int argc, char **argv)
 	printf("\nFramework ready. Entering main loop...\n");
 
 	/* === Main pump loop (钩子由各模块 pumpcall 注册) === */
-	while (running) {
-		pumpcalls_run();
-		usleep(10000);
+	{
+		uint64_t last_hb = 0;
+
+		while (running) {
+			uint64_t now = sys_ms();
+
+			if (now - last_hb > 5000) {
+				last_hb = now;
+				printf("main: 心跳 %llus\n",
+				       (unsigned long long)(now / 1000));
+			}
+			pumpcalls_run();
+			usleep(10000);
+		}
 	}
 
 	printf("\nShutting down...\n");

@@ -29,6 +29,10 @@ enum online_state online_get_state(void);
 /* 当前 CID (未注册时空串) */
 const char *online_get_cid(void);
 
+/* MQTT 连接句柄 (proto.c 等发上行报文用, 不能传 NULL) */
+struct mqtt;
+struct mqtt *online_mqtt(void);
+
 /* pump: 由主循环驱动 (处理接入信息获取/注册状态机) */
 void online_pump(void);
 

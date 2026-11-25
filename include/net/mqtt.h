@@ -72,6 +72,9 @@ void mqtt_set_handler(struct mqtt *m, mqtt_msg_fn fn, void *ctx);
  * 每次调用开销极小 (非阻塞)。 */
 void mqtt_pump(struct mqtt *m);
 
+/* 轻量冲刷: 只写出待发队列 (阻塞操作期间实时发进度用) */
+void mqtt_flush_tx(struct mqtt *m);
+
 /* 发布。QoS 0 或 1。返回 0=已受理(入发送队列), -1=忙/未连接/缓冲满。 */
 int mqtt_publish(struct mqtt *m, const char *topic,
 		 const uint8_t *payload, int len, int qos, int retain);

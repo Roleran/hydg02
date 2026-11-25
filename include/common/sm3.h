@@ -1,5 +1,5 @@
 /*
- * include/pal/sm3.h - SM3 密码杂凑算法 (GB/T 32905-2016)
+ * include/common/sm3.h - SM3 密码杂凑算法 (GB/T 32905-2016)
  *
  * 流式接口: init → update* → final。
  * 协议 V3.0 用于文件完整性摘要 (0x04 Tag 0x11)。

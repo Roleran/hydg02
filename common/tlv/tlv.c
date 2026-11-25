@@ -1,7 +1,7 @@
 /*
  * pal/tlv.c - TLV 编解码实现 (协议 V3.0 2.5)
  */
-#include <pal/tlv.h>
+#include <common/tlv.h>
 
 #include <string.h>
 

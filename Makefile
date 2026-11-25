@@ -19,7 +19,7 @@ CC       = $(CROSS)gcc
 BOARD_IP ?= 192.168.50.1
 
 # === Source discovery (add new dirs here as subsystems grow) ===
-SRC_DIRS  = app/ sal/ pal/ net/
+SRC_DIRS  = app/ sal/ pal/ net/ common/crypto/ common/tlv/ common/modbus/
 SRC_DIRS += $(wildcard subsystems/*/)
 
 ALL_SRC   = $(foreach d,$(SRC_DIRS),$(wildcard $(d)*.c))

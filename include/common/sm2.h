@@ -1,5 +1,5 @@
 /*
- * include/pal/sm2.h - SM2 椭圆曲线数字签名 (GB/T 32918.2-2016)
+ * include/common/sm2.h - SM2 椭圆曲线数字签名 (GB/T 32918.2-2016)
  *
  * 曲线: sm2p256v1
  * 约定(与协议 V3.0 对齐, 见 ota 设计文档):

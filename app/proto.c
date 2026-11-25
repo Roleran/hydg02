@@ -3,14 +3,15 @@
  *
  * 从 online.c 的 MQTT 回调接收下行报文, 按协议 ID 分发。
  * 当前实现: 0x01 注册回复 (提取 CID) + 0x04 下载指令 (转发 OTA)
- * 后续: 0x02 通用指令 (LED/语音/触发/485 等)
+ *           + 0x02 功能码 0x05 (固件版本查询 / OTA 激活, 6.5)
+ * 后续: 0x02 其余功能码 (LED/语音/触发/485 等)
  */
 #include <app/proto.h>
 #include <app/online.h>
 #include <net/mqtt.h>
 #include <pal/config.h>
 #include <pal/sysio.h>
-#include <pal/tlv.h>
+#include <common/tlv.h>
 #include <sal/initcall.h>
 
 #include <stdio.h>
@@ -45,7 +46,15 @@ int proto_send_progress(uint64_t seq, uint8_t file_type,
 	msg[off++] = rc;
 
 	topic_resp_upgrade(topic, sizeof(topic));
-	return mqtt_publish(NULL, topic, msg, off, 0, 0);
+	{
+		int r = mqtt_publish(online_mqtt(), topic, msg, off, 0, 0);
+
+		/* 实时冲刷: 0x84 常在阻塞操作(下载/校验/安装)期间
+		 * 产生, 那时主循环卡住、正常 pump 不跑 — 立即把队
+		 * 列写出, 平台才能看到实时进度 */
+		mqtt_flush_tx(online_mqtt());
+		return r;
+	}
 }
 
 int proto_send_ack(uint64_t seq, uint8_t func, uint8_t op,
@@ -70,7 +79,7 @@ int proto_send_ack(uint64_t seq, uint8_t func, uint8_t op,
 	}
 
 	topic_resp_msg(topic, sizeof(topic));
-	return mqtt_publish(NULL, topic, msg, off, 1, 0);
+	return mqtt_publish(online_mqtt(), topic, msg, off, 1, 0);
 }
 
 /* === 下行解析 === */
@@ -190,10 +199,53 @@ static void handle_cmd(const uint8_t *p, int len)
 
 	/* 各功能码的实现在后续版本接入 */
 	switch (func) {
-	case 0x05:	/* 固件 OTA 升级 (查询/激活) */
+	case 0x05:	/* 固件 OTA 升级 (6.5: 查询/激活) */
 		if (op == 0x03) {
-			printf("proto: OTA 激活指令 (暂未实现)\n");
-			/* 6.5 第 5 步: 激活指令, 校验版本后标记 stable */
+			/* 激活指令: 参数区 Tag 0x0F 子类型 0x01 = 目标版本号 */
+			const uint8_t *tlv = p + 13;
+			const uint8_t *ver;
+			uint16_t ver_len;
+			char ver_s[32];
+			int ret;
+
+			if (13 + (int)param_len > len ||
+			    tlv_find_subtype(tlv, param_len, 0x0F, 0x01,
+					     &ver, &ver_len) != 0 ||
+			    ver_len >= sizeof(ver_s)) {
+				printf("proto: 激活指令参数错误\n");
+				proto_send_ack(seq, 0x05, 0x03,
+					       PROTO_RC_PARAM, NULL, 0);
+				break;
+			}
+			memcpy(ver_s, ver, ver_len);
+			ver_s[ver_len] = '\0';
+			printf("proto: OTA 激活指令 ver=%s\n", ver_s);
+
+			/* 6.5 第 5 步: 校验当前运行版本一致后激活备份槽,
+			 * 内部置 slot_x_stable=1 并上报 0x84 成功 */
+			extern int ota_activate(const char *version);
+
+			ret = ota_activate(ver_s);
+			proto_send_ack(seq, 0x05, 0x03,
+				       ret == 0 ? PROTO_RC_OK
+						: PROTO_RC_PARAM,
+				       NULL, 0);
+		} else if (op == 0x01) {
+			/* 版本查询 (6.5): 应答 Tag 0x0F 子类型 0x01 + 当前固件版本 */
+			const char *fw = conf_get("fw_version", "0.0.0");
+			uint8_t tlv_buf[64];
+			uint8_t vbuf[40];
+			struct tlv_writer w;
+			int fw_len = strlen(fw);
+
+			if (fw_len > (int)sizeof(vbuf) - 1)
+				fw_len = sizeof(vbuf) - 1;
+			vbuf[0] = 0x01;			/* 子类型: 固件版本 */
+			memcpy(vbuf + 1, fw, fw_len);
+			tlv_writer_init(&w, tlv_buf, sizeof(tlv_buf));
+			tlv_add(&w, 0x0F, vbuf, fw_len + 1);
+			proto_send_ack(seq, 0x05, 0x01, PROTO_RC_OK,
+				       tlv_buf, w.len);
 		}
 		break;
 

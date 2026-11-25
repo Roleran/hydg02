@@ -5,7 +5,7 @@
  */
 #include <sal/initcall.h>
 #include <sal/evbus.h>
-#include <subsystems/net.h>
+#include <net/net.h>
 
 #include <stdio.h>
 

@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
 
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/ssl.h>
@@ -108,6 +109,9 @@ static int mqtt_tls_connect(struct mqtt *m)
 		goto fail;
 	}
 
+	/* 阻塞式 BIO (握手/写已被验证可靠); 读循环用 poll 守卫
+	 * 实现有限等待 — 不用 recv_timeout BIO (其超时语义在
+	 * 流式 TLS 上有状态隐患, 实测导致收不到后续数据) */
 	mbedtls_ssl_set_bio(&SS.ssl, &SS.net,
 			    mbedtls_net_send, mbedtls_net_recv, NULL);
 
@@ -206,6 +210,24 @@ static uint16_t next_pkt_id(struct mqtt *m)
 	if (m->next_pkt_id == 0)
 		m->next_pkt_id = 1;
 	return m->next_pkt_id;
+}
+
+/* 轻量冲刷: 只把待发队列写出, 不读不推进状态机。
+ * 供阻塞操作期间(下载/校验/安装)实时发出 0x84 进度 —
+ * 此时主循环卡在阻塞调用里, 正常 pump 不会运行。 */
+void mqtt_flush_tx(struct mqtt *m)
+{
+	int ret;
+
+	if (m->state != MQTT_CONNECTED || m->txlen <= 0)
+		return;
+
+	ret = mbedtls_ssl_write(&SS.ssl, m->txbuf, m->txlen);
+	if (ret > 0) {
+		memmove(m->txbuf, m->txbuf + ret, m->txlen - ret);
+		m->txlen -= ret;
+	}
+	/* WANT_WRITE/错误: 留给 pump 下一轮重试 */
 }
 
 /* === 报文发送接口 === */
@@ -405,6 +427,7 @@ static int mqtt_parse(struct mqtt *m)
 			if (remlen >= 2 && body[1] == 0) {
 				m->state = MQTT_CONNECTED;
 				m->last_rx_ms = sys_ms();
+				m->last_ping_ms = m->last_rx_ms;
 				m->fail_count = 0;
 				printf("mqtt: CONNACK 成功\n");
 				if (m->on_connected)
@@ -447,6 +470,7 @@ static int mqtt_parse(struct mqtt *m)
 void mqtt_pump(struct mqtt *m)
 {
 	uint64_t now = sys_ms();
+	int ssl_err = 0;	/* 断连原因: mbedtls 错误码 (0=超时判定) */
 
 	switch (m->state) {
 	case MQTT_INIT:
@@ -485,11 +509,15 @@ void mqtt_pump(struct mqtt *m)
 				m->reconnect_at_ms = now + 30000;
 			}
 		} else if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
-			   ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+			   ret != MBEDTLS_ERR_SSL_WANT_WRITE &&
+			   ret != MBEDTLS_ERR_SSL_TIMEOUT) {
 			printf("mqtt: TLS 握手失败 (%d)\n", ret);
 			mqtt_tls_cleanup(m);
 			m->state = MQTT_RECONNECT_WAIT;
 			m->reconnect_at_ms = now + 30000;
+		} else {
+			/* WANT_READ/WRITE/TIMEOUT: 稍息再试 (避免忙等) */
+			usleep(2000);
 		}
 		break;
 	}
@@ -510,24 +538,43 @@ void mqtt_pump(struct mqtt *m)
 		}
 
 		for (;;) {
+			struct pollfd pfd;
+			int pr;
+
 			if (m->rxlen >= (int)sizeof(m->rxbuf) - 1) {
 				/* 上限保护: 丢弃整包边界外的数据 */
 				m->rxlen = 0;
 				break;
 			}
+			/* poll 守卫: 100ms 无数据即退出读循环,
+			 * 让下一轮 pump 的写阶段刷出待发报文 */
+			pfd.fd = SS.net.fd;
+			pfd.events = POLLIN;
+			pfd.revents = 0;
+			pr = poll(&pfd, 1, 100);
+			if (pr <= 0)
+				break;		/* 超时/被信号打断 */
+			if (pfd.revents & (POLLHUP | POLLERR)) {
+				ssl_err = MBEDTLS_ERR_NET_RECV_FAILED;
+				goto conn_lost;
+			}
 			ret = mbedtls_ssl_read(&SS.ssl,
 					       m->rxbuf + m->rxlen,
 					       sizeof(m->rxbuf) - m->rxlen);
 			if (ret > 0) {
+				printf("mqtt: rx %d B\n", ret);
 				m->rxlen += ret;
 				m->last_rx_ms = now;
 			} else if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
 				   ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+				/* 记录未到齐, 下轮 poll 再读 */
 				break;
 			} else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ||
 				   ret == 0) {
+				ssl_err = ret;
 				goto conn_lost;
 			} else {
+				ssl_err = ret;
 				goto conn_lost;
 			}
 		}
@@ -543,6 +590,12 @@ void mqtt_pump(struct mqtt *m)
 			}
 		}
 
+		/* 刷新时间: 读循环+解析可能耗时 100ms+, 且 CONNACK
+		 * 解析里 last_rx 用的是新鲜 sys_ms() — 若沿用 pump 开
+		 * 始的旧 now 做无符号减法, last_rx > now 会回绕成天文
+		 * 数字, 90s 判定瞬间误触发 (实测 last_rx 领先 100ms) */
+		now = sys_ms();
+
 		/* KeepAlive: 30s 间隔 PINGREQ */
 		if (m->state == MQTT_CONNECTED &&
 		    now - m->last_ping_ms > 30000) {
@@ -554,8 +607,13 @@ void mqtt_pump(struct mqtt *m)
 
 		/* 90 秒无收包判定断线 (协议 5.1: KeepAlive 1.5 倍) */
 		if (m->state == MQTT_CONNECTED &&
-		    now - m->last_rx_ms > 90000)
+		    now - m->last_rx_ms > 90000) {
+			printf("mqtt: 90s 无收包判死 (last_rx=%llums "
+			       "now=%llums)\n",
+			       (unsigned long long)m->last_rx_ms,
+			       (unsigned long long)now);
 			goto conn_lost;
+		}
 		break;
 	}
 
@@ -565,7 +623,7 @@ void mqtt_pump(struct mqtt *m)
 	return;
 
 conn_lost:
-	printf("mqtt: 连接断开\n");
+	printf("mqtt: 连接断开 (ssl_ret=%d, -0x%x)\n", ssl_err, -ssl_err);
 	mqtt_tls_cleanup(m);
 	m->state = MQTT_RECONNECT_WAIT;
 	m->rxlen = m->txlen = 0;
